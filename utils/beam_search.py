@@ -1,6 +1,8 @@
 import time
-import torch
 from typing import NamedTuple
+
+import torch
+
 from utils.lexsort import torch_lexsort
 
 
@@ -19,11 +21,11 @@ def get_beam_search_results(beams, final_state):
     parents = [beam.parent for beam in beams[1:]]
 
     solutions = final_state.construct_solutions(backtrack(parents, actions))
-    return beam.score, solutions, final_state.get_final_cost()[:, 0], final_state.ids.view(-1), beam.batch_size
+    return beam.score, solutions, final_state.get_final_cost(
+    )[:, 0], final_state.ids.view(-1), beam.batch_size
 
 
-def _beam_search(state, beam_size, propose_expansions=None,
-                keep_states=False):
+def _beam_search(state, beam_size, propose_expansions=None, keep_states=False):
 
     beam = BatchBeam.initialize(state)
 
@@ -34,7 +36,8 @@ def _beam_search(state, beam_size, propose_expansions=None,
     while not beam.all_finished():
 
         # Use the model to propose and score expansions
-        parent, action, score = beam.propose_expansions() if propose_expansions is None else propose_expansions(beam)
+        parent, action, score = beam.propose_expansions(
+        ) if propose_expansions is None else propose_expansions(beam)
         if parent is None:
             return beams, None
 
@@ -67,17 +70,18 @@ class BatchBeam(NamedTuple):
     # Indicates for each row to which batch it belongs (0, 0, 0, 1, 1, 2, ...), managed by state
     @property
     def ids(self):
-        return self.state.ids.view(-1)  # Need to flat as state has steps dimension
+        return self.state.ids.view(
+            -1)  # Need to flat as state has steps dimension
 
     def __getitem__(self, key):
-        assert torch.is_tensor(key) or isinstance(key, slice)  # If tensor, idx all tensors by this tensor:
+        assert torch.is_tensor(key) or isinstance(
+            key, slice)  # If tensor, idx all tensors by this tensor:
         return self._replace(
             # ids=self.ids[key],
             score=self.score[key] if self.score is not None else None,
             state=self.state[key],
             parent=self.parent[key] if self.parent is not None else None,
-            action=self.action[key] if self.action is not None else None
-        )
+            action=self.action[key] if self.action is not None else None)
 
     # Do not use __len__ since this is used by namedtuple internally and should be number of fields
     # def __len__(self):
@@ -87,14 +91,14 @@ class BatchBeam(NamedTuple):
     def initialize(state):
         batch_size = len(state.ids)
         device = state.ids.device
-        return BatchBeam(
-            score=torch.zeros(batch_size, dtype=torch.float, device=device),
-            state=state,
-            parent=None,
-            action=None,
-            batch_size=batch_size,
-            device=device
-        )
+        return BatchBeam(score=torch.zeros(batch_size,
+                                           dtype=torch.float,
+                                           device=device),
+                         state=state,
+                         parent=None,
+                         action=None,
+                         batch_size=batch_size,
+                         device=device)
 
     def propose_expansions(self):
         mask = self.state.get_mask()
@@ -105,11 +109,12 @@ class BatchBeam(NamedTuple):
 
     def expand(self, parent, action, score=None):
         return self._replace(
-            score=score,  # The score is cleared upon expanding as it is no longer valid, or it must be provided
-            state=self.state[parent].update(action),  # Pass ids since we replicated state
+            score=
+            score,  # The score is cleared upon expanding as it is no longer valid, or it must be provided
+            state=self.state[parent].update(
+                action),  # Pass ids since we replicated state
             parent=parent,
-            action=action
-        )
+            action=action)
 
     def topk(self, k):
         idx_topk = segment_topk_idx(self.score, k, self.ids)
@@ -128,8 +133,7 @@ class BatchBeam(NamedTuple):
             score=self.score.to(device) if self.score is not None else None,
             state=self.state.to(device),
             parent=self.parent.to(device) if self.parent is not None else None,
-            action=self.action.to(device) if self.action is not None else None
-        )
+            action=self.action.to(device) if self.action is not None else None)
 
     def clear_state(self):
         return self._replace(state=None)
@@ -165,12 +169,14 @@ def segment_topk_idx(x, k, ids):
     splits = torch.cat((ids.new_tensor([0]), splits_[:, 0] + 1))
     # Make a new array in which we store for each id the offset (start) of the group
     # This way ids does not need to be increasing or adjacent, as long as each group is a single range
-    group_offsets = splits.new_zeros((splits.max() + 1,))
+    group_offsets = splits.new_zeros((splits.max() + 1, ))
     group_offsets[ids[splits]] = splits
-    offsets = group_offsets[ids]  # Look up offsets based on ids, effectively repeating for the repetitions per id
+    offsets = group_offsets[
+        ids]  # Look up offsets based on ids, effectively repeating for the repetitions per id
 
     # We want topk so need to sort x descending so sort -x (be careful with unsigned data type!)
-    idx_sorted = torch_lexsort((-(x if x.dtype != torch.uint8 else x.int()).detach(), ids))
+    idx_sorted = torch_lexsort(
+        (-(x if x.dtype != torch.uint8 else x.int()).detach(), ids))
 
     # This will filter first k per group (example k = 2)
     # ids     = [0, 0, 0, 1, 1, 1, 1, 2]
@@ -196,7 +202,6 @@ def backtrack(parents, actions):
 
 
 class CachedLookup(object):
-
     def __init__(self, data):
         self.orig = data
         self.key = None
@@ -206,7 +211,8 @@ class CachedLookup(object):
         assert not isinstance(key, slice), "CachedLookup does not support slicing, " \
                                            "you can slice the result of an index operation instead"
 
-        assert torch.is_tensor(key)  # If tensor, idx all tensors by this tensor:
+        assert torch.is_tensor(
+            key)  # If tensor, idx all tensors by this tensor:
 
         if self.key is None:
             self.key = key

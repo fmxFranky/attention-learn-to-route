@@ -1,28 +1,34 @@
+import math
 import os
 import time
-from tqdm import tqdm
-import torch
-import math
 
+import torch
+import wandb
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
-from torch.nn import DataParallel
+from tqdm import tqdm
 
 from nets.attention_model import set_decode_type
-from utils.log_utils import log_values
 from utils import move_to
+from utils.dist_utils import SequentialDistributedSampler, distributed_concat
+from utils.log_utils import log_values
 
 
 def get_inner_model(model):
-    return model.module if isinstance(model, DataParallel) else model
+    return model.module if isinstance(model, DDP) else model
 
 
 def validate(model, dataset, opts):
     # Validate
-    print('Validating...')
+    rank = torch.distributed.get_rank()
+    if rank == 0:
+        print('Validating...')
     cost = rollout(model, dataset, opts)
     avg_cost = cost.mean()
-    print('Validation overall avg_cost: {} +- {}'.format(
-        avg_cost, torch.std(cost) / math.sqrt(len(cost))))
+    if rank == 0:
+        print('Validation overall avg_cost: {} +- {}'.format(
+            avg_cost,
+            torch.std(cost) / math.sqrt(len(cost))))
 
     return avg_cost
 
@@ -35,13 +41,24 @@ def rollout(model, dataset, opts):
     def eval_model_bat(bat):
         with torch.no_grad():
             cost, _ = model(move_to(bat, opts.device))
-        return cost.data.cpu()
+        return cost
+        # return cost.data.cpu()
 
-    return torch.cat([
-        eval_model_bat(bat)
-        for bat
-        in tqdm(DataLoader(dataset, batch_size=opts.eval_batch_size), disable=opts.no_progress_bar)
-    ], 0)
+    return distributed_concat(
+        torch.cat(
+            [
+                eval_model_bat(bat) for bat in tqdm(
+                    DataLoader(
+                        dataset,
+                        batch_size=opts.eval_batch_size,
+                        pin_memory=True,
+                        # num_workers=os.cpu_count(),
+                        sampler=SequentialDistributedSampler(
+                            dataset, batch_size=opts.eval_batch_size)),
+                    disable=opts.no_progress_bar)
+            ],
+            0),
+        len(dataset))
 
 
 def clip_grad_norms(param_groups, max_norm=math.inf):
@@ -55,52 +72,63 @@ def clip_grad_norms(param_groups, max_norm=math.inf):
     grad_norms = [
         torch.nn.utils.clip_grad_norm_(
             group['params'],
-            max_norm if max_norm > 0 else math.inf,  # Inf so no clipping but still call to calc
-            norm_type=2
-        )
-        for group in param_groups
+            max_norm if max_norm > 0 else
+            math.inf,  # Inf so no clipping but still call to calc
+            norm_type=2) for group in param_groups
     ]
-    grad_norms_clipped = [min(g_norm, max_norm) for g_norm in grad_norms] if max_norm > 0 else grad_norms
+    grad_norms_clipped = [min(g_norm, max_norm) for g_norm in grad_norms
+                          ] if max_norm > 0 else grad_norms
     return grad_norms, grad_norms_clipped
 
 
-def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, problem, tb_logger, opts):
-    print("Start train epoch {}, lr={} for run {}".format(epoch, optimizer.param_groups[0]['lr'], opts.run_name))
+def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset,
+                problem, opts):
+    rank = torch.distributed.get_rank()
+    world_size = torch.distributed.get_world_size()
+
+    if rank == 0:
+        print("Start train epoch {}, lr={} for run {}".format(
+            epoch, optimizer.param_groups[0]['lr'], opts.run_name))
     step = epoch * (opts.epoch_size // opts.batch_size)
     start_time = time.time()
 
-    if not opts.no_tensorboard:
-        tb_logger.log_value('learnrate_pg0', optimizer.param_groups[0]['lr'], step)
+    if not opts.no_wandb and rank == 0:
+        wandb.log({'learnrate_pg0', optimizer.param_groups[0]['lr']},
+                  step=step)
 
     # Generate new training data for each epoch
-    training_dataset = baseline.wrap_dataset(problem.make_dataset(
-        size=opts.graph_size, num_samples=opts.epoch_size, distribution=opts.data_distribution))
-    training_dataloader = DataLoader(training_dataset, batch_size=opts.batch_size, num_workers=1)
+    training_dataset = baseline.wrap_dataset(
+        problem.make_dataset(size=opts.graph_size,
+                             num_samples=opts.epoch_size,
+                             distribution=opts.data_distribution))
+    training_sampler = torch.utils.data.distributed.DistributedSampler(
+        training_dataset, num_replicas=world_size, rank=rank)
+    training_sampler.set_epoch(epoch)
+    training_dataloader = DataLoader(training_dataset,
+                                     batch_size=opts.batch_size,
+                                     shuffle=False,
+                                     sampler=training_sampler,
+                                     num_workers=os.cpu_count())
 
     # Put model in train mode!
     model.train()
     set_decode_type(model, "sampling")
 
-    for batch_id, batch in enumerate(tqdm(training_dataloader, disable=opts.no_progress_bar)):
+    for batch_id, batch in enumerate(
+            tqdm(training_dataloader, disable=opts.no_progress_bar)):
 
-        train_batch(
-            model,
-            optimizer,
-            baseline,
-            epoch,
-            batch_id,
-            step,
-            batch,
-            tb_logger,
-            opts
-        )
+        train_batch(model, optimizer, baseline, epoch, batch_id, step, batch,
+                    opts)
 
         step += 1
 
     epoch_duration = time.time() - start_time
-    print("Finished epoch {}, took {} s".format(epoch, time.strftime('%H:%M:%S', time.gmtime(epoch_duration))))
+    if rank == 0:
+        print("Finished epoch {}, took {} s".format(
+            epoch, time.strftime('%H:%M:%S', time.gmtime(epoch_duration))))
 
-    if (opts.checkpoint_epochs != 0 and epoch % opts.checkpoint_epochs == 0) or epoch == opts.n_epochs - 1:
+    if (opts.checkpoint_epochs != 0 and epoch % opts.checkpoint_epochs
+            == 0) or epoch == opts.n_epochs - 1 and rank == 0:
         print('Saving model and state...')
         torch.save(
             {
@@ -109,13 +137,11 @@ def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, pr
                 'rng_state': torch.get_rng_state(),
                 'cuda_rng_state': torch.cuda.get_rng_state_all(),
                 'baseline': baseline.state_dict()
-            },
-            os.path.join(opts.save_dir, 'epoch-{}.pt'.format(epoch))
-        )
+            }, os.path.join(opts.save_dir, 'epoch-{}.pt'.format(epoch)))
 
     avg_reward = validate(model, val_dataset, opts)
 
-    if not opts.no_tensorboard:
+    if not opts.no_wandb and rank == 0:
         tb_logger.log_value('val_avg_reward', avg_reward, step)
 
     baseline.epoch_callback(model, epoch)
@@ -124,17 +150,8 @@ def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset, pr
     lr_scheduler.step()
 
 
-def train_batch(
-        model,
-        optimizer,
-        baseline,
-        epoch,
-        batch_id,
-        step,
-        batch,
-        tb_logger,
-        opts
-):
+def train_batch(model, optimizer, baseline, epoch, batch_id, step, batch,
+                opts):
     x, bl_val = baseline.unwrap_batch(batch)
     x = move_to(x, opts.device)
     bl_val = move_to(bl_val, opts.device) if bl_val is not None else None
@@ -157,6 +174,6 @@ def train_batch(
     optimizer.step()
 
     # Logging
-    if step % int(opts.log_step) == 0:
-        log_values(cost, grad_norms, epoch, batch_id, step,
-                   log_likelihood, reinforce_loss, bl_loss, tb_logger, opts)
+    if step % int(opts.log_step) == 0 and torch.distributed.get_rank() == 0:
+        log_values(cost, grad_norms, epoch, batch_id, step, log_likelihood,
+                   reinforce_loss, bl_loss, opts)

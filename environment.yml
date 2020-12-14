@@ -3,11 +3,9 @@ name: attention_tsp
 channels:
 - pytorch
 dependencies:
-- python>=3.8
+- python>=3.7
 - anaconda
 - tqdm
 - pytorch
 - torchvision
-- cuda91
-- pip:
-  - tensorboard_logger
+- matplotlib

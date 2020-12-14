@@ -1,7 +1,9 @@
-import torch
 from typing import NamedTuple
-from utils.boolmask import mask_long2bool, mask_long_scatter
+
+import torch
 import torch.nn.functional as F
+
+from utils.boolmask import mask_long2bool, mask_long_scatter
 
 
 class StatePCTSP(NamedTuple):
@@ -33,10 +35,12 @@ class StatePCTSP(NamedTuple):
 
     @property
     def dist(self):
-        return (self.coords[:, :, None, :] - self.coords[:, None, :, :]).norm(p=2, dim=-1)
+        return (self.coords[:, :, None, :] - self.coords[:, None, :, :]).norm(
+            p=2, dim=-1)
 
     def __getitem__(self, key):
-        assert torch.is_tensor(key) or isinstance(key, slice)  # If tensor, idx all tensors by this tensor:
+        assert torch.is_tensor(key) or isinstance(
+            key, slice)  # If tensor, idx all tensors by this tensor:
         return self._replace(
             ids=self.ids[key],
             prev_a=self.prev_a[key],
@@ -58,14 +62,16 @@ class StatePCTSP(NamedTuple):
         # For both deterministic and stochastic variant, model sees only deterministic (expected) prize
         expected_prize = input['deterministic_prize']
         # This is the prize that is actually obtained at each node
-        real_prize = input['stochastic_prize' if stochastic else 'deterministic_prize']
+        real_prize = input[
+            'stochastic_prize' if stochastic else 'deterministic_prize']
         penalty = input['penalty']
 
         batch_size, n_loc, _ = loc.size()
         coords = torch.cat((depot[:, None, :], loc), -2)
         # For prize, prepend 0 (corresponding to depot) so we can gather efficiently
 
-        real_prize_with_depot = torch.cat((torch.zeros_like(real_prize[:, :1]), real_prize), -1)
+        real_prize_with_depot = torch.cat(
+            (torch.zeros_like(real_prize[:, :1]), real_prize), -1)
         penalty_with_depot = F.pad(penalty, (1, 0), mode='constant', value=0)
 
         return StatePCTSP(
@@ -73,22 +79,34 @@ class StatePCTSP(NamedTuple):
             expected_prize=expected_prize,
             real_prize=real_prize_with_depot,
             penalty=penalty_with_depot,
-            ids=torch.arange(batch_size, dtype=torch.int64, device=loc.device)[:, None],  # Add steps dimension
-            prev_a=torch.zeros(batch_size, 1, dtype=torch.long, device=loc.device),
-            visited_=(  # Visited as mask is easier to understand, as long more memory efficient
+            ids=torch.arange(batch_size, dtype=torch.int64,
+                             device=loc.device)[:,
+                                                None],  # Add steps dimension
+            prev_a=torch.zeros(batch_size,
+                               1,
+                               dtype=torch.long,
+                               device=loc.device),
+            visited_=
+            (  # Visited as mask is easier to understand, as long more memory efficient
                 # Keep visited_ with depot so we can scatter efficiently (if there is an action for depot)
-                torch.zeros(
-                    batch_size, 1, n_loc + 1,
-                    dtype=torch.uint8, device=loc.device
-                )
-                if visited_dtype == torch.uint8
-                else torch.zeros(batch_size, 1, (n_loc + 63) // 64, dtype=torch.int64, device=loc.device)  # Ceil
+                torch.zeros(batch_size,
+                            1,
+                            n_loc + 1,
+                            dtype=torch.uint8,
+                            device=loc.device) if visited_dtype == torch.uint8
+                else torch.zeros(batch_size,
+                                 1, (n_loc + 63) // 64,
+                                 dtype=torch.int64,
+                                 device=loc.device)  # Ceil
             ),
             lengths=torch.zeros(batch_size, 1, device=loc.device),
             cur_total_prize=torch.zeros(batch_size, 1, device=loc.device),
-            cur_total_penalty=penalty.sum(-1)[:, None],  # Sum penalties (all when nothing is visited), add step dim
+            cur_total_penalty=penalty.sum(-1)
+            [:,
+             None],  # Sum penalties (all when nothing is visited), add step dim
             cur_coord=input['depot'][:, None, :],  # Add step dimension
-            i=torch.zeros(1, dtype=torch.int64, device=loc.device)  # Vector with length num_steps
+            i=torch.zeros(1, dtype=torch.int64,
+                          device=loc.device)  # Vector with length num_steps
         )
 
     def get_remaining_prize_to_collect(self):
@@ -104,7 +122,8 @@ class StatePCTSP(NamedTuple):
 
     def update(self, selected):
 
-        assert self.i.size(0) == 1, "Can only update if state represents single step"
+        assert self.i.size(
+            0) == 1, "Can only update if state represents single step"
 
         # Update the state
         selected = selected[:, None]  # Add dimension for step
@@ -112,10 +131,13 @@ class StatePCTSP(NamedTuple):
 
         # Add the length
         cur_coord = self.coords[self.ids, selected]
-        lengths = self.lengths + (cur_coord - self.cur_coord).norm(p=2, dim=-1)  # (batch_dim, 1)
+        lengths = self.lengths + (cur_coord - self.cur_coord).norm(
+            p=2, dim=-1)  # (batch_dim, 1)
         # Add current total prize
-        cur_total_prize = self.cur_total_prize + self.real_prize[self.ids, selected]
-        cur_total_penalty = self.cur_total_penalty + self.penalty[self.ids, selected]
+        cur_total_prize = self.cur_total_prize + self.real_prize[self.ids,
+                                                                 selected]
+        cur_total_penalty = self.cur_total_penalty + self.penalty[self.ids,
+                                                                  selected]
 
         if self.visited_.dtype == torch.uint8:
             # Note: here we do not subtract one as we have to scatter so the first column allows scattering depot
@@ -123,13 +145,17 @@ class StatePCTSP(NamedTuple):
             visited_ = self.visited_.scatter(-1, prev_a[:, :, None], 1)
         else:
             # This works, by check_unset=False it is allowed to set the depot visited a second a time
-            visited_ = mask_long_scatter(self.visited_, prev_a, check_unset=False)
+            visited_ = mask_long_scatter(self.visited_,
+                                         prev_a,
+                                         check_unset=False)
 
-        return self._replace(
-            prev_a=prev_a, visited_=visited_,
-            lengths=lengths, cur_total_prize=cur_total_prize, cur_total_penalty=cur_total_penalty, cur_coord=cur_coord,
-            i=self.i + 1
-        )
+        return self._replace(prev_a=prev_a,
+                             visited_=visited_,
+                             lengths=lengths,
+                             cur_total_prize=cur_total_prize,
+                             cur_total_penalty=cur_total_penalty,
+                             cur_coord=cur_coord,
+                             i=self.i + 1)
 
     def all_finished(self):
         # All must be returned to depot (and at least 1 step since at start also prev_a == 0)
@@ -155,11 +181,10 @@ class StatePCTSP(NamedTuple):
         # Note: this always allows going to the depot, but that should always be suboptimal so be ok
         # Cannot visit if already visited or if the depot has already been visited then we cannot visit anymore
         visited_ = self.visited
-        mask = (
-            visited_ | visited_[:, :, 0:1]
-        )
+        mask = (visited_ | visited_[:, :, 0:1])
         # Cannot visit depot if not yet collected 1 total prize and there are unvisited nodes
-        mask[:, :, 0] = (self.cur_total_prize < 1.) & (visited_[:, :, 1:].int().sum(-1) < visited_[:, :, 1:].size(-1))
+        mask[:, :, 0] = (self.cur_total_prize < 1.) & (
+            visited_[:, :, 1:].int().sum(-1) < visited_[:, :, 1:].size(-1))
 
         return mask > 0  # Hacky way to return bool or uint8 depending on pytorch version
 

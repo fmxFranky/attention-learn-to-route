@@ -6,10 +6,12 @@
 geni module - Auxiliary functions to the GENI method.
 
 """
-__version__="1.0"
+__version__ = "1.0"
+
+import sys
 
 import numpy as np
-import sys
+
 
 def geni(v, s, max_i):
     quality_1 = 0
@@ -19,7 +21,10 @@ def geni(v, s, max_i):
     s_start.quality = sys.maxint
 
     for i in range(1, max_i):
-        quality_1 = quality_after_insertion_1(v, i, )
+        quality_1 = quality_after_insertion_1(
+            v,
+            i,
+        )
         quality_2 = quality_after_insertion_2()
 
         if quality_1 < quality_2 and quality_1 < s_star.quality:

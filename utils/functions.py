@@ -1,17 +1,17 @@
-import warnings
-
-import torch
-import numpy as np
-import os
 import json
-from tqdm import tqdm
-from multiprocessing.dummy import Pool as ThreadPool
+import os
+import warnings
 from multiprocessing import Pool
+from multiprocessing.dummy import Pool as ThreadPool
+
+import numpy as np
+import torch
 import torch.nn.functional as F
+from tqdm import tqdm
 
 
 def load_problem(name):
-    from problems import TSP, CVRP, SDVRP, OP, PCTSPDet, PCTSPStoch
+    from problems import CVRP, OP, SDVRP, TSP, PCTSPDet, PCTSPStoch
     problem = {
         'tsp': TSP,
         'cvrp': CVRP,
@@ -20,12 +20,14 @@ def load_problem(name):
         'pctsp_det': PCTSPDet,
         'pctsp_stoch': PCTSPStoch,
     }.get(name, None)
-    assert problem is not None, "Currently unsupported problem: {}!".format(name)
+    assert problem is not None, "Currently unsupported problem: {}!".format(
+        name)
     return problem
 
 
 def torch_load_cpu(load_path):
-    return torch.load(load_path, map_location=lambda storage, loc: storage)  # Load on CPU
+    return torch.load(load_path,
+                      map_location=lambda storage, loc: storage)  # Load on CPU
 
 
 def move_to(var, device):
@@ -41,11 +43,8 @@ def _load_model_file(load_path, model):
     load_optimizer_state_dict = None
     print('  [*] Loading model from {}'.format(load_path))
 
-    load_data = torch.load(
-        os.path.join(
-            os.getcwd(),
-            load_path
-        ), map_location=lambda storage, loc: storage)
+    load_data = torch.load(os.path.join(os.getcwd(), load_path),
+                           map_location=lambda storage, loc: storage)
 
     if isinstance(load_data, dict):
         load_optimizer_state_dict = load_data.get('optimizer', None)
@@ -88,8 +87,7 @@ def load_model(path, epoch=None):
             epoch = max(
                 int(os.path.splitext(filename)[0].split("-")[1])
                 for filename in os.listdir(path)
-                if os.path.splitext(filename)[1] == '.pt'
-            )
+                if os.path.splitext(filename)[1] == '.pt')
         model_filename = os.path.join(path, 'epoch-{}.pt'.format(epoch))
     else:
         assert False, "{} is not a valid directory or file".format(path)
@@ -104,18 +102,17 @@ def load_model(path, epoch=None):
     }.get(args.get('model', 'attention'), None)
     assert model_class is not None, "Unknown model: {}".format(model_class)
 
-    model = model_class(
-        args['embedding_dim'],
-        args['hidden_dim'],
-        problem,
-        n_encode_layers=args['n_encode_layers'],
-        mask_inner=True,
-        mask_logits=True,
-        normalization=args['normalization'],
-        tanh_clipping=args['tanh_clipping'],
-        checkpoint_encoder=args.get('checkpoint_encoder', False),
-        shrink_size=args.get('shrink_size', None)
-    )
+    model = model_class(args['embedding_dim'],
+                        args['hidden_dim'],
+                        problem,
+                        n_encode_layers=args['n_encode_layers'],
+                        mask_inner=True,
+                        mask_logits=True,
+                        normalization=args['normalization'],
+                        tanh_clipping=args['tanh_clipping'],
+                        checkpoint_encoder=args.get('checkpoint_encoder',
+                                                    False),
+                        shrink_size=args.get('shrink_size', None))
     # Overwrite model parameters by parameters to load
     load_data = torch_load_cpu(model_filename)
     model.load_state_dict({**model.state_dict(), **load_data.get('model', {})})
@@ -145,23 +142,20 @@ def run_all_in_pool(func, directory, dataset, opts, use_multiprocessing=True):
     offset = getattr(opts, 'offset', None)
     if offset is None:
         offset = 0
-    ds = dataset[offset:(offset + opts.n if opts.n is not None else len(dataset))]
+    ds = dataset[offset:(offset +
+                         opts.n if opts.n is not None else len(dataset))]
     pool_cls = (Pool if use_multiprocessing and num_cpus > 1 else ThreadPool)
     with pool_cls(num_cpus) as pool:
-        results = list(tqdm(pool.imap(
-            func,
-            [
-                (
-                    directory,
-                    str(i + offset).zfill(w),
-                    *problem
-                )
-                for i, problem in enumerate(ds)
-            ]
-        ), total=len(ds), mininterval=opts.progress_bar_mininterval))
+        results = list(
+            tqdm(pool.imap(func,
+                           [(directory, str(i + offset).zfill(w), *problem)
+                            for i, problem in enumerate(ds)]),
+                 total=len(ds),
+                 mininterval=opts.progress_bar_mininterval))
 
     failed = [str(i + offset) for i, res in enumerate(results) if res is None]
-    assert len(failed) == 0, "Some instances failed: {}".format(" ".join(failed))
+    assert len(failed) == 0, "Some instances failed: {}".format(
+        " ".join(failed))
     return results, num_cpus
 
 
@@ -173,7 +167,9 @@ def do_batch_rep(v, n):
     elif isinstance(v, tuple):
         return tuple(do_batch_rep(v_, n) for v_ in v)
 
-    return v[None, ...].expand(n, *v.size()).contiguous().view(-1, *v.size()[1:])
+    return v[None, ...].expand(n,
+                               *v.size()).contiguous().view(-1,
+                                                            *v.size()[1:])
 
 
 def sample_many(inner_func, get_cost_func, input, batch_rep=1, iter_rep=1):
@@ -197,8 +193,7 @@ def sample_many(inner_func, get_cost_func, input, batch_rep=1, iter_rep=1):
     # (batch_size * batch_rep, iter_rep, max_length) => (batch_size, batch_rep * iter_rep, max_length)
     pis = torch.cat(
         [F.pad(pi, (0, max_length - pi.size(-1))) for pi in pis],
-        1
-    )  # .view(embeddings.size(0), batch_rep * iter_rep, max_length)
+        1)  # .view(embeddings.size(0), batch_rep * iter_rep, max_length)
     costs = torch.cat(costs, 1)
 
     # (batch_size)

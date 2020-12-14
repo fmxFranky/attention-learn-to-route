@@ -15,7 +15,8 @@ def _mask_bool2byte(mask):
     assert mask.dtype == torch.uint8
     # assert (mask <= 1).all()  # Precondition, disabled for efficiency
     mask, d = _pad_mask(mask)
-    return (mask.view(*mask.size()[:-1], d, 8) << torch.arange(8, out=mask.new())).sum(-1, dtype=torch.uint8)
+    return (mask.view(*mask.size()[:-1], d, 8) << torch.arange(
+        8, out=mask.new())).sum(-1, dtype=torch.uint8)
 
 
 def _mask_byte2long(mask):
@@ -24,7 +25,9 @@ def _mask_byte2long(mask):
     # Note this corresponds to a temporary factor 8
     # memory overhead by converting to long before summing
     # Alternatively, aggregate using for loop
-    return (mask.view(*mask.size()[:-1], d, 8).long() << (torch.arange(8, dtype=torch.int64, device=mask.device) * 8)).sum(-1)
+    return (
+        mask.view(*mask.size()[:-1], d, 8).long() <<
+        (torch.arange(8, dtype=torch.int64, device=mask.device) * 8)).sum(-1)
 
 
 def mask_bool2long(mask):
@@ -35,13 +38,17 @@ def mask_bool2long(mask):
 def _mask_long2byte(mask, n=None):
     if n is None:
         n = 8 * mask.size(-1)
-    return (mask[..., None] >> (torch.arange(8, out=mask.new()) * 8))[..., :n].to(torch.uint8).view(*mask.size()[:-1], -1)[..., :n]
+    return (mask[..., None] >>
+            (torch.arange(8, out=mask.new()) * 8))[..., :n].to(
+                torch.uint8).view(*mask.size()[:-1], -1)[..., :n]
 
 
 def _mask_byte2bool(mask, n=None):
     if n is None:
         n = 8 * mask.size(-1)
-    return (mask[..., None] & (mask.new_ones(8) << torch.arange(8, out=mask.new()) * 1)).view(*mask.size()[:-1], -1)[..., :n] > 0
+    return (mask[..., None] &
+            (mask.new_ones(8) << torch.arange(8, out=mask.new()) * 1)).view(
+                *mask.size()[:-1], -1)[..., :n] > 0
 
 
 def mask_long2bool(mask, n=None):
@@ -61,7 +68,8 @@ def mask_long_scatter(mask, values, check_unset=True):
     # This indicates in which value of the mask a bit should be set
     where = (values_ >= (rng * 64)) & (values_ < ((rng + 1) * 64))
     # Optional: check that bit is not already set
-    assert not (check_unset and ((mask & (where.long() << (values_ % 64))) > 0).any())
+    assert not (check_unset and ((mask & (where.long() <<
+                                          (values_ % 64))) > 0).any())
     # Set bit by shifting a 1 to the correct position
     # (% not strictly necessary as bitshift is cyclic)
     # since where is 0 if no value needs to be set, the bitshift has no effect

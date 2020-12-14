@@ -6,10 +6,12 @@
 pctsp module - Implements Pctsp, a class that describes an instance of the problem..
 
 """
-__version__="1.0"
+__version__ = "1.0"
+
+import re
 
 import numpy as np
-import re
+
 
 class Pctsp(object):
     """
@@ -26,8 +28,8 @@ class Pctsp(object):
 
     def load(self, file_name, prize_min):
 
-        f = open(file_name,'r')
-        for i,line in enumerate(f):
+        f = open(file_name, 'r')
+        for i, line in enumerate(f):
             if i is 5: break
             if i is 1: self.prize = np.fromstring(line, dtype=int, sep=' ')
             if i is 4: self.penal = np.fromstring(line, dtype=int, sep=' ')
@@ -38,5 +40,3 @@ class Pctsp(object):
         self.prize_min = prize_min
 
         assert sum(self.prize) >= prize_min, "Infeasible"
-
-

@@ -1,5 +1,6 @@
-import torch
 from typing import NamedTuple
+
+import torch
 
 
 class StateSDVRP(NamedTuple):
@@ -22,7 +23,8 @@ class StateSDVRP(NamedTuple):
     VEHICLE_CAPACITY = 1.0  # Hardcoded
 
     def __getitem__(self, key):
-        assert torch.is_tensor(key) or isinstance(key, slice)  # If tensor, idx all tensors by this tensor:
+        assert torch.is_tensor(key) or isinstance(
+            key, slice)  # If tensor, idx all tensors by this tensor:
         return self._replace(
             ids=self.ids[key],
             prev_a=self.prev_a[key],
@@ -43,27 +45,34 @@ class StateSDVRP(NamedTuple):
         return StateSDVRP(
             coords=torch.cat((depot[:, None, :], loc), -2),
             demand=demand,
-            ids=torch.arange(batch_size, dtype=torch.int64, device=loc.device)[:, None],  # Add steps dimension
-            prev_a=torch.zeros(batch_size, 1, dtype=torch.long, device=loc.device),
+            ids=torch.arange(batch_size, dtype=torch.int64,
+                             device=loc.device)[:,
+                                                None],  # Add steps dimension
+            prev_a=torch.zeros(batch_size,
+                               1,
+                               dtype=torch.long,
+                               device=loc.device),
             used_capacity=demand.new_zeros(batch_size, 1),
-            demands_with_depot=torch.cat((
-                demand.new_zeros(batch_size, 1),
-                demand[:, :]
-            ), 1)[:, None, :],
+            demands_with_depot=torch.cat(
+                (demand.new_zeros(batch_size, 1), demand[:, :]), 1)[:,
+                                                                    None, :],
             lengths=torch.zeros(batch_size, 1, device=loc.device),
             cur_coord=input['depot'][:, None, :],  # Add step dimension
-            i=torch.zeros(1, dtype=torch.int64, device=loc.device)  # Vector with length num_steps
+            i=torch.zeros(1, dtype=torch.int64,
+                          device=loc.device)  # Vector with length num_steps
         )
 
     def get_final_cost(self):
 
         assert self.all_finished()
 
-        return self.lengths + (self.coords[self.ids, 0, :] - self.cur_coord).norm(p=2, dim=-1)
+        return self.lengths + (self.coords[self.ids, 0, :] -
+                               self.cur_coord).norm(p=2, dim=-1)
 
     def update(self, selected):
 
-        assert self.i.size(0) == 1, "Can only update if state represents single step"
+        assert self.i.size(
+            0) == 1, "Can only update if state represents single step"
 
         # Update the state
         selected = selected[:, None]  # Add dimension for step
@@ -71,31 +80,37 @@ class StateSDVRP(NamedTuple):
 
         # Add the length
         cur_coord = self.coords[self.ids, selected]
-        lengths = self.lengths + (cur_coord - self.cur_coord).norm(p=2, dim=-1)  # (batch_dim, 1)
+        lengths = self.lengths + (cur_coord - self.cur_coord).norm(
+            p=2, dim=-1)  # (batch_dim, 1)
 
         # Not selected_demand is demand of first node (by clamp) so incorrect for nodes that visit depot!
-        selected_demand = self.demands_with_depot.gather(-1, prev_a[:, :, None])[:, :, 0]
-        delivered_demand = torch.min(selected_demand, self.VEHICLE_CAPACITY - self.used_capacity)
+        selected_demand = self.demands_with_depot.gather(
+            -1, prev_a[:, :, None])[:, :, 0]
+        delivered_demand = torch.min(
+            selected_demand, self.VEHICLE_CAPACITY - self.used_capacity)
 
         # Increase capacity if depot is not visited, otherwise set to 0
         #used_capacity = torch.where(selected == 0, 0, self.used_capacity + delivered_demand)
-        used_capacity = (self.used_capacity + delivered_demand) * (prev_a != 0).float()
+        used_capacity = (self.used_capacity +
+                         delivered_demand) * (prev_a != 0).float()
 
         # demands_with_depot = demands_with_depot.clone()[:, 0, :]
         # Add one dimension since we write a single value
         demands_with_depot = self.demands_with_depot.scatter(
-            -1,
-            prev_a[:, :, None],
-            self.demands_with_depot.gather(-1, prev_a[:, :, None]) - delivered_demand[:, :, None]
-        )
-        
-        return self._replace(
-            prev_a=prev_a, used_capacity=used_capacity, demands_with_depot=demands_with_depot,
-            lengths=lengths, cur_coord=cur_coord, i=self.i + 1
-        )
+            -1, prev_a[:, :, None],
+            self.demands_with_depot.gather(-1, prev_a[:, :, None]) -
+            delivered_demand[:, :, None])
+
+        return self._replace(prev_a=prev_a,
+                             used_capacity=used_capacity,
+                             demands_with_depot=demands_with_depot,
+                             lengths=lengths,
+                             cur_coord=cur_coord,
+                             i=self.i + 1)
 
     def all_finished(self):
-        return self.i.item() >= self.demands_with_depot.size(-1) and not (self.demands_with_depot > 0).any()
+        return self.i.item() >= self.demands_with_depot.size(-1) and not (
+            self.demands_with_depot > 0).any()
 
     def get_current_node(self):
         return self.prev_a
@@ -109,7 +124,8 @@ class StateSDVRP(NamedTuple):
         """
 
         # Nodes that cannot be visited are already visited or too much demand to be served now
-        mask_loc = (self.demands_with_depot[:, :, 1:] == 0) | (self.used_capacity[:, :, None] >= self.VEHICLE_CAPACITY)
+        mask_loc = (self.demands_with_depot[:, :, 1:] == 0) | (
+            self.used_capacity[:, :, None] >= self.VEHICLE_CAPACITY)
 
         # Cannot visit the depot if just visited and still unserved nodes
         mask_depot = (self.prev_a == 0) & ((mask_loc == 0).int().sum(-1) > 0)

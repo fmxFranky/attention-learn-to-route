@@ -19,7 +19,10 @@ def compute_in_batches(f, calc_batch_size, *args, n=None):
     # Run all batches
     # all_res = [f(*batch_args) for batch_args in zip(*[torch.chunk(arg, n_batches) for arg in args])]
     # We do not use torch.chunk such that it also works for other classes that support slicing
-    all_res = [f(*(arg[i * calc_batch_size:(i + 1) * calc_batch_size] for arg in args)) for i in range(n_batches)]
+    all_res = [
+        f(*(arg[i * calc_batch_size:(i + 1) * calc_batch_size]
+            for arg in args)) for i in range(n_batches)
+    ]
 
     # Allow for functions that return None
     def safe_cat(chunks, dim=0):
