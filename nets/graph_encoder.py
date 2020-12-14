@@ -143,7 +143,7 @@ class Normalization(nn.Module):
 
     def forward(self, input):
 
-        if isinstance(self.normalizer, nn.BatchNorm1d):
+        if isinstance(self.normalizer, (nn.BatchNorm1d, nn.SyncBatchNorm)):
             return self.normalizer(input.view(
                 -1, input.size(-1))).view(*input.size())
         elif isinstance(self.normalizer, nn.InstanceNorm1d):

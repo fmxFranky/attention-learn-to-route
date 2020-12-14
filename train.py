@@ -45,20 +45,17 @@ def rollout(model, dataset, opts):
         # return cost.data.cpu()
 
     return distributed_concat(
-        torch.cat(
-            [
-                eval_model_bat(bat) for bat in tqdm(
-                    DataLoader(
-                        dataset,
-                        batch_size=opts.eval_batch_size,
-                        pin_memory=True,
-                        # num_workers=os.cpu_count(),
-                        sampler=SequentialDistributedSampler(
-                            dataset, batch_size=opts.eval_batch_size)),
-                    disable=opts.no_progress_bar)
-            ],
-            0),
-        len(dataset))
+        torch.cat([
+            eval_model_bat(bat)
+            for bat in tqdm(DataLoader(dataset,
+                                       batch_size=opts.eval_batch_size,
+                                       pin_memory=True,
+                                       num_workers=os.cpu_count(),
+                                       sampler=SequentialDistributedSampler(
+                                           dataset,
+                                           batch_size=opts.eval_batch_size)),
+                            disable=opts.no_progress_bar)
+        ], 0), len(dataset))
 
 
 def clip_grad_norms(param_groups, max_norm=math.inf):
@@ -81,19 +78,19 @@ def clip_grad_norms(param_groups, max_norm=math.inf):
     return grad_norms, grad_norms_clipped
 
 
-def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset,
-                problem, opts):
+def train_epoch(model, optimizer, scaler, baseline, lr_scheduler, epoch,
+                val_dataset, problem, opts):
     rank = torch.distributed.get_rank()
     world_size = torch.distributed.get_world_size()
 
     if rank == 0:
         print("Start train epoch {}, lr={} for run {}".format(
             epoch, optimizer.param_groups[0]['lr'], opts.run_name))
-    step = epoch * (opts.epoch_size // opts.batch_size)
+    step = epoch * opts.epoch_size
     start_time = time.time()
 
     if not opts.no_wandb and rank == 0:
-        wandb.log({'learnrate_pg0', optimizer.param_groups[0]['lr']},
+        wandb.log({'learnrate_pg0': optimizer.param_groups[0]['lr']},
                   step=step)
 
     # Generate new training data for each epoch
@@ -107,6 +104,7 @@ def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset,
     training_dataloader = DataLoader(training_dataset,
                                      batch_size=opts.batch_size,
                                      shuffle=False,
+                                     pin_memory=True,
                                      sampler=training_sampler,
                                      num_workers=os.cpu_count())
 
@@ -117,15 +115,16 @@ def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset,
     for batch_id, batch in enumerate(
             tqdm(training_dataloader, disable=opts.no_progress_bar)):
 
-        train_batch(model, optimizer, baseline, epoch, batch_id, step, batch,
-                    opts)
+        train_batch(model, optimizer, scaler, baseline, epoch, batch_id, step,
+                    batch, opts)
 
         step += 1
 
-    epoch_duration = time.time() - start_time
+    epoch_train_duration = time.time() - start_time
     if rank == 0:
         print("Finished epoch {}, took {} s".format(
-            epoch, time.strftime('%H:%M:%S', time.gmtime(epoch_duration))))
+            epoch, time.strftime('%H:%M:%S',
+                                 time.gmtime(epoch_train_duration))))
 
     if (opts.checkpoint_epochs != 0 and epoch % opts.checkpoint_epochs
             == 0) or epoch == opts.n_epochs - 1 and rank == 0:
@@ -139,41 +138,72 @@ def train_epoch(model, optimizer, baseline, lr_scheduler, epoch, val_dataset,
                 'baseline': baseline.state_dict()
             }, os.path.join(opts.save_dir, 'epoch-{}.pt'.format(epoch)))
 
+    start_time = time.time()
     avg_reward = validate(model, val_dataset, opts)
+    epoch_validate_duration = time.time() - start_time
+
+    start_time = time.time()
+    baseline.epoch_callback(model, epoch)
+    epoch_blcallback_duration = time.time() - start_time
 
     if not opts.no_wandb and rank == 0:
-        tb_logger.log_value('val_avg_reward', avg_reward, step)
-
-    baseline.epoch_callback(model, epoch)
+        wandb.log(
+            {
+                'val_avg_reward': avg_reward,
+                "epoch": epoch,
+                'train_time': epoch_train_duration,
+                'validate_time': epoch_validate_duration,
+                'blcallback_time': epoch_blcallback_duration
+            },
+            step=step)
 
     # lr_scheduler should be called at end of epoch
     lr_scheduler.step()
 
 
-def train_batch(model, optimizer, baseline, epoch, batch_id, step, batch,
-                opts):
+def train_batch(model, optimizer, scaler, baseline, epoch, batch_id, step,
+                batch, opts):
     x, bl_val = baseline.unwrap_batch(batch)
     x = move_to(x, opts.device)
     bl_val = move_to(bl_val, opts.device) if bl_val is not None else None
 
-    # Evaluate model, get costs and log probabilities
-    cost, log_likelihood = model(x)
+    if scaler is not None:
+        optimizer.zero_grad()
+        with torch.cuda.amp.autocast():
+            cost, log_likelihood = model(x)
+            bl_val, bl_loss = baseline.eval(
+                x, cost) if bl_val is None else (bl_val, 0)
+            reinforce_loss = ((cost - bl_val) * log_likelihood).mean()
+            loss = reinforce_loss + bl_loss
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        grad_norms = clip_grad_norms(optimizer.param_groups,
+                                     opts.max_grad_norm)
+        scaler.step(optimizer)
+        scaler.update()
 
-    # Evaluate baseline, get baseline loss if any (only for critic)
-    bl_val, bl_loss = baseline.eval(x, cost) if bl_val is None else (bl_val, 0)
+    else:
+        # Evaluate model, get costs and log probabilities
+        cost, log_likelihood = model(x)
 
-    # Calculate loss
-    reinforce_loss = ((cost - bl_val) * log_likelihood).mean()
-    loss = reinforce_loss + bl_loss
+        # Evaluate baseline, get baseline loss if any (only for critic)
+        bl_val, bl_loss = baseline.eval(
+            x, cost) if bl_val is None else (bl_val, 0)
 
-    # Perform backward pass and optimization step
-    optimizer.zero_grad()
-    loss.backward()
-    # Clip gradient norms and get (clipped) gradient norms for logging
-    grad_norms = clip_grad_norms(optimizer.param_groups, opts.max_grad_norm)
-    optimizer.step()
+        # Calculate loss
+        reinforce_loss = ((cost - bl_val) * log_likelihood).mean()
+        loss = reinforce_loss + bl_loss
+
+        # Perform backward pass and optimization step
+        optimizer.zero_grad()
+        loss.backward()
+        # Clip gradient norms and get (clipped) gradient norms for logging
+        grad_norms = clip_grad_norms(optimizer.param_groups,
+                                     opts.max_grad_norm)
+        optimizer.step()
 
     # Logging
-    if step % int(opts.log_step) == 0 and torch.distributed.get_rank() == 0:
+    if (step + 1) % int(
+            opts.log_step) == 0 and torch.distributed.get_rank() == 0:
         log_values(cost, grad_norms, epoch, batch_id, step, log_likelihood,
                    reinforce_loss, bl_loss, opts)

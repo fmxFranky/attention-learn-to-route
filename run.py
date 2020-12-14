@@ -31,6 +31,9 @@ def run(opts):
     random.seed(opts.seed + rank)
     np.random.seed(opts.seed + rank)
 
+    if not os.path.exists(opts.save_dir) and rank == 0:
+        os.makedirs(opts.save_dir)
+
     # Optionally configure wandb
     if not opts.no_wandb and rank == 0:
         wandb.login('never', '31ce01e4120061694da54a54ab0dafbee1262420')
@@ -40,17 +43,13 @@ def run(opts):
                    name=opts.run_name,
                    sync_tensorboard=True,
                    save_code=True)
-    if not os.path.exists(opts.save_dir) and rank == 0:
-        os.makedirs(opts.save_dir)
-
+    
     # Set the device
     if opts.use_cuda:
-        if torch.cuda.device_count() >= 1:
-            torch.distributed.init_process_group(backend='nccl')
-            torch.cuda.set_device(rank)
-            opts.device = torch.device("cuda", rank)
-        else:
-            opts.device = torch.device("cuda")
+        torch.cuda.set_device(rank)
+        torch.distributed.init_process_group(backend='nccl', init_method='env://')
+        opts.device = torch.device("cuda", rank)
+
     else:
         opts.device = torch.device("cpu")
 
@@ -84,7 +83,7 @@ def run(opts):
                         shrink_size=opts.shrink_size).to(opts.device)
 
     if opts.use_cuda:
-        # model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).to(opts.device)
+        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).to(opts.device)
         model = DDP(model, device_ids=[rank])
 
     # Overwrite model parameters by parameters to load
@@ -130,6 +129,8 @@ def run(opts):
         'lr': opts.lr_critic
     }] if len(baseline.get_learnable_parameters()) > 0 else []))
 
+    scaler = torch.cuda.amp.GradScaler() if opts.precision == 16 else None
+
     # Load optimizer state
     if 'optimizer' in load_data:
         optimizer.load_state_dict(load_data['optimizer'])
@@ -167,7 +168,7 @@ def run(opts):
         validate(model, val_dataset, opts)
     else:
         for epoch in range(opts.epoch_start, opts.epoch_start + opts.n_epochs):
-            train_epoch(model, optimizer, baseline, lr_scheduler, epoch,
+            train_epoch(model, optimizer, scaler, baseline, lr_scheduler, epoch,
                         val_dataset, problem, opts)
 
 

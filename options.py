@@ -12,6 +12,7 @@ def get_options(args=None):
     )
     # Distributed Training
     parser.add_argument("--local_rank", default=-1, type=int)
+    parser.add_argument("--precision", default=32, type=int)
 
     # Data
     parser.add_argument('--problem',
@@ -124,7 +125,7 @@ def get_options(args=None):
     )
     parser.add_argument('--eval_batch_size',
                         type=int,
-                        default=1024,
+                        default=4096,
                         help="Batch size to use during (baseline) evaluation")
     parser.add_argument(
         '--checkpoint_encoder',
