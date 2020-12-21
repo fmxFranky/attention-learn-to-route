@@ -2,15 +2,17 @@ import math
 from typing import NamedTuple
 
 import torch
+from fast_transformers.builders import TransformerEncoderBuilder
+from fast_transformers.feature_maps import Favor
 from torch import nn
 from torch.nn import DataParallel
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.checkpoint import checkpoint
-
-from nets.graph_encoder import GraphAttentionEncoder
 from utils.beam_search import CachedLookup
 from utils.functions import sample_many
 from utils.tensor_functions import compute_in_batches
+
+from nets.graph_encoder import GraphAttentionEncoder
 
 
 def set_decode_type(model, decode_type):
@@ -46,7 +48,9 @@ class AttentionModel(nn.Module):
                  embedding_dim,
                  hidden_dim,
                  problem,
+                 attention_type,
                  n_encode_layers=2,
+                 feed_forward_dim=512,
                  tanh_clipping=10.,
                  mask_inner=True,
                  mask_logits=True,
@@ -106,11 +110,27 @@ class AttentionModel(nn.Module):
 
         self.init_embed = nn.Linear(node_dim, embedding_dim)
 
-        self.embedder = GraphAttentionEncoder(n_heads=n_heads,
+        self.attention_type = attention_type
+        if attention_type == 'original':
+            self.embedder = GraphAttentionEncoder(n_heads=n_heads,
                                               embed_dim=embedding_dim,
-                                              n_layers=self.n_encode_layers,
+                                              feed_forward_dim=feed_forward_dim,
+                                              n_layers=n_encode_layers,
                                               normalization=normalization)
-
+        else:
+            self.embedder = TransformerEncoderBuilder.from_kwargs(
+                n_layers=n_encode_layers,
+                n_heads=n_heads,
+                query_dimensions=embedding_dim // n_heads,
+                value_dimensions=embedding_dim // n_heads,
+                feed_forward_dimensions=512,
+                attention_dropout=0.0,
+                local_context=20,
+                clusters=5,
+                topk=20,
+                feature_map=Favor.factory(n_dims=128),
+                attention_type=attention_type).get()         
+        
         # For each node we compute (glimpse key, glimpse value, logit key) so 3 * embedding_dim
         self.project_node_embeddings = nn.Linear(embedding_dim,
                                                  3 * embedding_dim,
@@ -140,9 +160,11 @@ class AttentionModel(nn.Module):
 
         if self.checkpoint_encoder and self.training:  # Only checkpoint if we need gradients
             embeddings, _ = checkpoint(self.embedder, self._init_embed(input))
-        else:
+        elif self.attention_type == 'original':
             embeddings, _ = self.embedder(self._init_embed(input))
-
+        else:
+            embeddings = self.embedder(self._init_embed(input))
+            
         _log_p, pi = self._inner(input, embeddings)
 
         cost, mask = self.problem.get_costs(input, pi)

@@ -14,6 +14,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from nets.attention_model import AttentionModel
 from nets.critic_network import CriticNetwork
+from nets.graph_encoder import Normalization
 from nets.pointer_network import CriticNetworkLSTM, PointerNetwork
 from options import get_options
 from reinforce_baselines import (CriticBaseline, ExponentialBaseline,
@@ -39,15 +40,16 @@ def run(opts):
         wandb.login('never', '31ce01e4120061694da54a54ab0dafbee1262420')
         wandb.init(dir=opts.save_dir,
                    config=opts,
-                   project='rl4cop',
+                   project='large_scale_tsp',
                    name=opts.run_name,
                    sync_tensorboard=True,
                    save_code=True)
-    
+
     # Set the device
     if opts.use_cuda:
         torch.cuda.set_device(rank)
-        torch.distributed.init_process_group(backend='nccl', init_method='env://')
+        torch.distributed.init_process_group(backend='nccl',
+                                             init_method='env://')
         opts.device = torch.device("cuda", rank)
 
     else:
@@ -71,19 +73,29 @@ def run(opts):
         'pointer': PointerNetwork
     }.get(opts.model, None)
     assert model_class is not None, "Unknown model: {}".format(model_class)
-    model = model_class(opts.embedding_dim,
-                        opts.hidden_dim,
-                        problem,
-                        n_encode_layers=opts.n_encode_layers,
-                        mask_inner=True,
-                        mask_logits=True,
-                        normalization=opts.normalization,
-                        tanh_clipping=opts.tanh_clipping,
-                        checkpoint_encoder=opts.checkpoint_encoder,
-                        shrink_size=opts.shrink_size).to(opts.device)
+    model: torch.nn.Module = model_class(
+        opts.embedding_dim,
+        opts.hidden_dim,
+        problem,
+        attention_type=opts.attention_type,
+        n_encode_layers=opts.n_encode_layers,
+        n_heads=opts.n_heads,
+        feed_forward_dim=opts.feed_forward_dim,
+        mask_inner=True,
+        mask_logits=True,
+        normalization=opts.normalization,
+        tanh_clipping=opts.tanh_clipping,
+        checkpoint_encoder=opts.checkpoint_encoder,
+        shrink_size=opts.shrink_size).to(opts.device)
+
+    if opts.init_normalization_parameters:
+        for m in model.modules():
+            if isinstance(m, Normalization):
+                m.init_parameters()
 
     if opts.use_cuda:
-        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).to(opts.device)
+        model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).to(
+            opts.device)
         model = DDP(model, device_ids=[rank])
 
     # Overwrite model parameters by parameters to load
@@ -168,8 +180,8 @@ def run(opts):
         validate(model, val_dataset, opts)
     else:
         for epoch in range(opts.epoch_start, opts.epoch_start + opts.n_epochs):
-            train_epoch(model, optimizer, scaler, baseline, lr_scheduler, epoch,
-                        val_dataset, problem, opts)
+            train_epoch(model, optimizer, scaler, baseline, lr_scheduler,
+                        epoch, val_dataset, problem, opts)
 
 
 if __name__ == "__main__":

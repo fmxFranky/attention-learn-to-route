@@ -20,7 +20,7 @@ def get_options(args=None):
                         help="The problem to solve, default 'tsp'")
     parser.add_argument('--graph_size',
                         type=int,
-                        default=20,
+                        default=100,
                         help="The size of the problem graph")
     parser.add_argument('--batch_size',
                         type=int,
@@ -43,7 +43,11 @@ def get_options(args=None):
     # Model
     parser.add_argument('--model',
                         default='attention',
-                        help="Model, 'attention' (default) or 'pointer'")
+                        help="Model type, including original AM's "
+                        "and other third-party attention implements")
+    parser.add_argument('--attention_type',
+                        default='original_full',
+                        help="Attention type")
     parser.add_argument('--embedding_dim',
                         type=int,
                         default=128,
@@ -52,10 +56,18 @@ def get_options(args=None):
                         type=int,
                         default=128,
                         help='Dimension of hidden layers in Enc/Dec')
+    parser.add_argument('--feed_forward_dim',
+                        type=int,
+                        default=512,
+                        help='Dimension of feed-forward layers in Enc/Dec')
     parser.add_argument('--n_encode_layers',
                         type=int,
                         default=3,
                         help='Number of layers in the encoder/critic network')
+    parser.add_argument('--n_heads',
+                        type=int,
+                        default=8,
+                        help='Number of heads in the MHA network')
     parser.add_argument(
         '--tanh_clipping',
         type=float,
@@ -65,12 +77,15 @@ def get_options(args=None):
     parser.add_argument(
         '--normalization',
         default='batch',
-        help="Normalization type, 'batch' (default) or 'instance'")
-
+        help="Normalization type, 'batch' (default) or 'instance' or 'layer")
+    parser.add_argument(
+        '--init_normalization_parameters',
+        action='store_true',
+        help="init Normalization layers' parameters")
     # Training
     parser.add_argument('--lr_model',
                         type=float,
-                        default=1e-4,
+                        default=3e-4,
                         help="Set the learning rate for the actor network")
     parser.add_argument('--lr_critic',
                         type=float,
@@ -89,7 +104,7 @@ def get_options(args=None):
                         help='The number of epochs to train')
     parser.add_argument('--seed',
                         type=int,
-                        default=1234,
+                        default=1235,
                         help='Random seed to use')
     parser.add_argument(
         '--max_grad_norm',
@@ -106,7 +121,7 @@ def get_options(args=None):
         help='Exponential moving average baseline decay (default 0.8)')
     parser.add_argument(
         '--baseline',
-        default=None,
+        default='rollout',
         help=
         "Baseline to use: 'rollout', 'critic' or 'exponential'. Defaults to no baseline."
     )
@@ -125,7 +140,7 @@ def get_options(args=None):
     )
     parser.add_argument('--eval_batch_size',
                         type=int,
-                        default=4096,
+                        default=2048,
                         help="Batch size to use during (baseline) evaluation")
     parser.add_argument(
         '--checkpoint_encoder',

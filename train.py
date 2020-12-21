@@ -129,13 +129,15 @@ def train_epoch(model, optimizer, scaler, baseline, lr_scheduler, epoch,
     if (opts.checkpoint_epochs != 0 and epoch % opts.checkpoint_epochs
             == 0) or epoch == opts.n_epochs - 1 and rank == 0:
         print('Saving model and state...')
+        if not os.path.exists(opts.save_dir):
+            os.makedirs(opts.save_dir)
         torch.save(
             {
                 'model': get_inner_model(model).state_dict(),
                 'optimizer': optimizer.state_dict(),
-                'rng_state': torch.get_rng_state(),
-                'cuda_rng_state': torch.cuda.get_rng_state_all(),
-                'baseline': baseline.state_dict()
+                # 'rng_state': torch.get_rng_state(),
+                # 'cuda_rng_state': torch.cuda.get_rng_state_all(),
+                # 'baseline': baseline.state_dict()
             }, os.path.join(opts.save_dir, 'epoch-{}.pt'.format(epoch)))
 
     start_time = time.time()
@@ -203,7 +205,6 @@ def train_batch(model, optimizer, scaler, baseline, epoch, batch_id, step,
         optimizer.step()
 
     # Logging
-    if (step + 1) % int(
-            opts.log_step) == 0 and torch.distributed.get_rank() == 0:
+    if step % int(opts.log_step) == 0 and torch.distributed.get_rank() == 0:
         log_values(cost, grad_norms, epoch, batch_id, step, log_likelihood,
                    reinforce_loss, bl_loss, opts)

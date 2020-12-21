@@ -127,10 +127,14 @@ class Normalization(nn.Module):
 
         normalizer_class = {
             'batch': nn.BatchNorm1d,
-            'instance': nn.InstanceNorm1d
+            'instance': nn.InstanceNorm1d,
+            'layer': nn.LayerNorm
         }.get(normalization, None)
 
-        self.normalizer = normalizer_class(embed_dim, affine=True)
+        if normalization == 'layer':
+            self.normalizer = normalizer_class(embed_dim)
+        else:
+            self.normalizer = normalizer_class(embed_dim, affine=True)
 
         # Normalization by default initializes affine parameters with bias 0 and weight unif(0,1) which is too large!
         # self.init_parameters()
@@ -142,12 +146,13 @@ class Normalization(nn.Module):
             param.data.uniform_(-stdv, stdv)
 
     def forward(self, input):
-
         if isinstance(self.normalizer, (nn.BatchNorm1d, nn.SyncBatchNorm)):
             return self.normalizer(input.view(
                 -1, input.size(-1))).view(*input.size())
         elif isinstance(self.normalizer, nn.InstanceNorm1d):
             return self.normalizer(input.permute(0, 2, 1)).permute(0, 2, 1)
+        elif isinstance(self.normalizer, nn.LayerNorm):
+            return self.normalizer(input)
         else:
             assert self.normalizer is None, "Unknown normalizer type"
             return input
@@ -158,7 +163,7 @@ class MultiHeadAttentionLayer(nn.Sequential):
         self,
         n_heads,
         embed_dim,
-        feed_forward_hidden=512,
+        feed_forward_dim=512,
         normalization='batch',
     ):
         super(MultiHeadAttentionLayer, self).__init__(
@@ -169,9 +174,9 @@ class MultiHeadAttentionLayer(nn.Sequential):
             Normalization(embed_dim, normalization),
             SkipConnection(
                 nn.Sequential(nn.
-                              Linear(embed_dim, feed_forward_hidden), nn.ReLU(
-                              ), nn.Linear(feed_forward_hidden, embed_dim)) if
-                feed_forward_hidden > 0 else nn.Linear(embed_dim, embed_dim)),
+                              Linear(embed_dim, feed_forward_dim), nn.ReLU(
+                              ), nn.Linear(feed_forward_dim, embed_dim)) if
+                feed_forward_dim > 0 else nn.Linear(embed_dim, embed_dim)),
             Normalization(embed_dim, normalization))
 
 
@@ -182,7 +187,7 @@ class GraphAttentionEncoder(nn.Module):
                  n_layers,
                  node_dim=None,
                  normalization='batch',
-                 feed_forward_hidden=512):
+                 feed_forward_dim=512):
         super(GraphAttentionEncoder, self).__init__()
 
         # To map input to embedding space
@@ -190,7 +195,7 @@ class GraphAttentionEncoder(nn.Module):
             node_dim, embed_dim) if node_dim is not None else None
 
         self.layers = nn.Sequential(*(MultiHeadAttentionLayer(
-            n_heads, embed_dim, feed_forward_hidden, normalization)
+            n_heads, embed_dim, feed_forward_dim, normalization)
                                       for _ in range(n_layers)))
 
     def forward(self, x, mask=None):

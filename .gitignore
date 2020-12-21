@@ -2,6 +2,10 @@ data/
 outputs/
 logs/
 results/
+pt/
+submit.yaml
+.ptconfig
+.ptignore
 __pycache__/
 .idea
 .vscode
@@ -10,3 +14,4 @@ __pycache__/
 *.tc_backward.*
 *.log
 *.bak
+*.yaml
