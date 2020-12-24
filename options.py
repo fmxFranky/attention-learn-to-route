@@ -48,6 +48,14 @@ def get_options(args=None):
     parser.add_argument('--attention_type',
                         default='original_full',
                         help="Attention type")
+    parser.add_argument('--encoding_knn_size',
+                        default=None,
+                        type=int,
+                        help="the number of neighbors which can be attend")
+    parser.add_argument('--decoding_knn_size',
+                        default=None,
+                        type=int,
+                        help="the number of neighbors which can be attend")
     parser.add_argument('--embedding_dim',
                         type=int,
                         default=128,
@@ -78,10 +86,9 @@ def get_options(args=None):
         '--normalization',
         default='batch',
         help="Normalization type, 'batch' (default) or 'instance' or 'layer")
-    parser.add_argument(
-        '--init_normalization_parameters',
-        action='store_true',
-        help="init Normalization layers' parameters")
+    parser.add_argument('--init_normalization_parameters',
+                        action='store_true',
+                        help="init Normalization layers' parameters")
     # Training
     parser.add_argument('--lr_model',
                         type=float,
@@ -140,7 +147,7 @@ def get_options(args=None):
     )
     parser.add_argument('--eval_batch_size',
                         type=int,
-                        default=2048,
+                        default=256,
                         help="Batch size to use during (baseline) evaluation")
     parser.add_argument(
         '--checkpoint_encoder',
@@ -210,4 +217,5 @@ def get_options(args=None):
         opts.bl_warmup_epochs = 1 if opts.baseline == 'rollout' else 0
     assert (opts.bl_warmup_epochs == 0) or (opts.baseline == 'rollout')
     assert opts.epoch_size % opts.batch_size == 0, "Epoch size must be integer multiple of batch size!"
+    opts.eval_batch_size = min(opts.eval_batch_size, opts.batch_size)
     return opts

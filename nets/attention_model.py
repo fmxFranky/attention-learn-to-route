@@ -4,6 +4,7 @@ from typing import NamedTuple
 import torch
 from fast_transformers.builders import TransformerEncoderBuilder
 from fast_transformers.feature_maps import Favor
+from fast_transformers.masking import FullMask
 from torch import nn
 from torch.nn import DataParallel
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -56,6 +57,8 @@ class AttentionModel(nn.Module):
                  mask_logits=True,
                  normalization='batch',
                  n_heads=8,
+                 encoding_knn_size=None,
+                 decoding_knn_size=None,
                  checkpoint_encoder=False,
                  shrink_size=None):
         super(AttentionModel, self).__init__()
@@ -108,15 +111,19 @@ class AttentionModel(nn.Module):
             self.W_placeholder.data.uniform_(
                 -1, 1)  # Placeholder should be in range of activations
 
+        self.encoding_knn_size = encoding_knn_size
+        self.decoding_knn_size = decoding_knn_size
+
         self.init_embed = nn.Linear(node_dim, embedding_dim)
 
         self.attention_type = attention_type
         if attention_type == 'original':
-            self.embedder = GraphAttentionEncoder(n_heads=n_heads,
-                                              embed_dim=embedding_dim,
-                                              feed_forward_dim=feed_forward_dim,
-                                              n_layers=n_encode_layers,
-                                              normalization=normalization)
+            self.embedder = GraphAttentionEncoder(
+                n_heads=n_heads,
+                embed_dim=embedding_dim,
+                feed_forward_dim=feed_forward_dim,
+                n_layers=n_encode_layers,
+                normalization=normalization)
         else:
             self.embedder = TransformerEncoderBuilder.from_kwargs(
                 n_layers=n_encode_layers,
@@ -129,8 +136,8 @@ class AttentionModel(nn.Module):
                 clusters=5,
                 topk=20,
                 feature_map=Favor.factory(n_dims=128),
-                attention_type=attention_type).get()         
-        
+                attention_type=attention_type).get()
+
         # For each node we compute (glimpse key, glimpse value, logit key) so 3 * embedding_dim
         self.project_node_embeddings = nn.Linear(embedding_dim,
                                                  3 * embedding_dim,
@@ -157,14 +164,27 @@ class AttentionModel(nn.Module):
         using DataParallel as the results may be of different lengths on different GPUs
         :return:
         """
-
+        self.encoding_knn_size = self.encoding_knn_size or input.size(1)
+        self.decoding_knn_size = self.decoding_knn_size or input.size(1)
+        # state = self.problem.make_state(input)
         if self.checkpoint_encoder and self.training:  # Only checkpoint if we need gradients
             embeddings, _ = checkpoint(self.embedder, self._init_embed(input))
         elif self.attention_type == 'original':
-            embeddings, _ = self.embedder(self._init_embed(input))
+            if self.encoding_knn_size is not None:
+                mask_shape = (input.size(0), input.size(1), input.size(1))
+                attn_mask = torch.zeros(*mask_shape,
+                                        device=input.device).bool()
+                knn = torch.argsort(
+                    (input[:, :, None, :] - input[:, None, :, :]).norm(
+                        p=2, dim=-1))[..., :self.encoding_knn_size]
+                attn_mask.scatter_(-1, knn, True)
+            else:
+                attn_mask = None
+            embeddings, _ = self.embedder(self._init_embed(input),
+                                          mask=attn_mask)
         else:
             embeddings = self.embedder(self._init_embed(input))
-            
+
         _log_p, pi = self._inner(input, embeddings)
 
         cost, mask = self.problem.get_costs(input, pi)
@@ -402,7 +422,7 @@ class AttentionModel(nn.Module):
 
         # Compute logits (unnormalized log_p)
         log_p, glimpse = self._one_to_many_logits(query, glimpse_K, glimpse_V,
-                                                  logit_K, mask)
+                                                  logit_K, mask, state)
 
         if normalize:
             log_p = torch.log_softmax(log_p / self.temp, dim=-1)
@@ -488,7 +508,8 @@ class AttentionModel(nn.Module):
                         embeddings.size(-1)), embeddings_per_step), 2)),
                 1)
 
-    def _one_to_many_logits(self, query, glimpse_K, glimpse_V, logit_K, mask):
+    def _one_to_many_logits(self, query, glimpse_K, glimpse_V, logit_K, mask,
+                            state):
 
         batch_size, num_steps, embed_dim = query.size()
         key_size = val_size = embed_dim // self.n_heads
@@ -502,8 +523,18 @@ class AttentionModel(nn.Module):
             -2, -1)) / math.sqrt(glimpse_Q.size(-1))
         if self.mask_inner:
             assert self.mask_logits, "Cannot mask inner without masking logits"
-            compatibility[mask[None, :, :,
-                               None, :].expand_as(compatibility)] = -math.inf
+            if self.decoding_knn_size is not None:
+                attn_mask = torch.ones_like(mask).bool().scatter(
+                    -1,
+                    state.get_nn_current().long()[
+                        ..., :self.decoding_knn_size or key_size], False)
+            else:
+                attn_mask = torch.zeros_like(mask).bool()
+
+            compatibility[(
+                mask +
+                attn_mask)[None, :, :,
+                           None, :].expand_as(compatibility)] = -math.inf
 
         # Batch matrix multiplication to compute heads (n_heads, batch_size, num_steps, val_size)
         heads = torch.matmul(torch.softmax(compatibility, dim=-1), glimpse_V)

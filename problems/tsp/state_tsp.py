@@ -52,8 +52,8 @@ class StateTSP(NamedTuple):
                              1,
                              dtype=torch.long,
                              device=loc.device)
-        dist = (loc[:,:, None,:] - loc[:, None,:,:]).norm(p=2, dim=-1)
-        knn = dist.topk(n_loc, dim=-1, largest=False)[1]
+        dist = (loc[:, :, None, :] - loc[:, None, :, :]).norm(p=2, dim=-1)
+        # knn = dist.topk(knn_size or n_loc, dim=-1, largest=False)[1]
         return StateTSP(
             loc=loc,
             dist=dist,
@@ -77,8 +77,7 @@ class StateTSP(NamedTuple):
             cur_coord=None,
             i=torch.zeros(1, dtype=torch.int64,
                           device=loc.device),  # Vector with length num_steps,
-            knn=knn
-        )
+            knn=None)
 
     def get_final_cost(self):
 
@@ -135,19 +134,24 @@ class StateTSP(NamedTuple):
         # Nodes already visited get inf so they do not make it
         if k is None:
             k = self.loc.size(-2) - self.i.item()  # Number of remaining
+        # return (self.dist[self.ids, :, :] +
+        #         self.visited.float()[:, :, None, :] * 1e6).topk(
+        #             k, dim=-1, largest=False)[1]
         return (self.dist[self.ids, :, :] +
-                self.visited.float()[:, :, None, :] * 1e6).topk(
-                    k, dim=-1, largest=False)[1]
+                self.visited.float()[:, :, None, :] * 1e6).sort(
+                    dim=-1)[1][..., :k]
 
     def get_nn_current(self, k=None):
-        assert False, "Currently not implemented, look into which neighbours to use in step 0?"
+        # assert False, "Currently not implemented, look into which neighbours to use in step 0?"
         # Note: if this is called in step 0, it will have k nearest neighbours to node 0, which may not be desired
         # so it is probably better to use k = None in the first iteration
         if k is None:
             k = self.loc.size(-2)
-        k = min(k, self.loc.size(-2) - self.i.item())  # Number of remaining
+        # k = min(k, self.loc.size(-2) - self.i.item())  # Number of remaining
+        # return (self.dist[self.ids, self.prev_a] +
+        #         self.visited.float() * 1e6).topk(k, dim=-1, largest=False)[1]
         return (self.dist[self.ids, self.prev_a] +
-                self.visited.float() * 1e6).topk(k, dim=-1, largest=False)[1]
+                self.visited.float() * 1e6).sort(dim=-1)[1][..., :k]
 
     def construct_solutions(self, actions):
         return actions

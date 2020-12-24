@@ -158,7 +158,7 @@ class Normalization(nn.Module):
             return input
 
 
-class MultiHeadAttentionLayer(nn.Sequential):
+class MultiHeadAttentionLayer(nn.Module):
     def __init__(
         self,
         n_heads,
@@ -166,18 +166,26 @@ class MultiHeadAttentionLayer(nn.Sequential):
         feed_forward_dim=512,
         normalization='batch',
     ):
-        super(MultiHeadAttentionLayer, self).__init__(
-            SkipConnection(
-                MultiHeadAttention(n_heads,
-                                   input_dim=embed_dim,
-                                   embed_dim=embed_dim)),
-            Normalization(embed_dim, normalization),
-            SkipConnection(
-                nn.Sequential(nn.
-                              Linear(embed_dim, feed_forward_dim), nn.ReLU(
-                              ), nn.Linear(feed_forward_dim, embed_dim)) if
-                feed_forward_dim > 0 else nn.Linear(embed_dim, embed_dim)),
-            Normalization(embed_dim, normalization))
+        super(MultiHeadAttentionLayer, self).__init__()
+
+        self.n_heads = n_heads
+        self.embed_dim = embed_dim
+        self.feed_forward_dim = feed_forward_dim
+        self.attn = MultiHeadAttention(n_heads,
+                                       input_dim=embed_dim,
+                                       embed_dim=embed_dim)
+        self.ff = nn.Sequential(
+            nn.Linear(embed_dim, feed_forward_dim), nn.ReLU(),
+            nn.Linear(feed_forward_dim,
+                      embed_dim)) if feed_forward_dim > 0 else nn.Linear(
+                          embed_dim, embed_dim)
+        self.norm1 = Normalization(embed_dim, normalization)
+        self.norm2 = Normalization(embed_dim, normalization)
+
+    def forward(self, x, mask=None):
+        src1 = self.norm1(x + self.attn(x, mask=mask))
+        src2 = self.norm2(src1 + self.ff(src1))
+        return src2
 
 
 class GraphAttentionEncoder(nn.Module):
@@ -194,19 +202,21 @@ class GraphAttentionEncoder(nn.Module):
         self.init_embed = nn.Linear(
             node_dim, embed_dim) if node_dim is not None else None
 
-        self.layers = nn.Sequential(*(MultiHeadAttentionLayer(
-            n_heads, embed_dim, feed_forward_dim, normalization)
-                                      for _ in range(n_layers)))
+        self.layers = nn.ModuleList([
+            MultiHeadAttentionLayer(n_heads, embed_dim, feed_forward_dim,
+                                    normalization) for _ in range(n_layers)
+        ])
 
     def forward(self, x, mask=None):
 
-        assert mask is None, "TODO mask not yet supported!"
+        # assert mask is None, "TODO mask not yet supported!"
 
         # Batch multiply to get initial embeddings of nodes
         h = self.init_embed(x.view(-1, x.size(-1))).view(
             *x.size()[:2], -1) if self.init_embed is not None else x
 
-        h = self.layers(h)
+        for layer in self.layers:
+            h = layer(h, mask=mask)
 
         return (
             h,  # (batch_size, graph_size, embed_dim)

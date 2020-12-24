@@ -81,6 +81,8 @@ def run(opts):
         n_encode_layers=opts.n_encode_layers,
         n_heads=opts.n_heads,
         feed_forward_dim=opts.feed_forward_dim,
+        encoding_knn_size=opts.encoding_knn_size,
+        decoding_knn_size=opts.decoding_knn_size,
         mask_inner=True,
         mask_logits=True,
         normalization=opts.normalization,
