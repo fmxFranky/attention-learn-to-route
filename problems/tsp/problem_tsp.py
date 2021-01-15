@@ -13,7 +13,7 @@ class TSP(object):
     NAME = 'tsp'
 
     @staticmethod
-    def get_costs(dataset, pi):
+    def get_costs(dataset, pi, sep=None):
         # Check that tours are valid, i.e. contain 0 to n -1
         assert (torch.arange(pi.size(1), out=pi.data.new()).view(
             1, -1).expand_as(pi) == pi.data.sort(1)[0]).all(), "Invalid tour"
@@ -21,9 +21,25 @@ class TSP(object):
         # Gather dataset in order of tour
         d = dataset.gather(1, pi.unsqueeze(-1).expand_as(dataset))
 
-        # Length is distance (L2-norm of difference) from each next location from its prev and of last from first
-        return (d[:, 1:] - d[:, :-1]).norm(
-            p=2, dim=2).sum(1) + (d[:, 0] - d[:, -1]).norm(p=2, dim=1), None
+        if sep is None:
+            torch.ones(d.size(0), 1, device=d.device) * d.size(1)
+
+        # Generate the mask of fake actions
+        indicators = sep.repeat(1, d.size(1)) - torch.arange(
+            0, d.size(1))[None, :].repeat(d.size(0), 1).to(d.device)
+        mask = indicators <= 0
+
+        # Calculate the real cost
+        last_node_coords = d[indicators == 1.]
+        d[mask] = 0.0
+        # add a zero column to d
+        zeros = torch.zeros(d.size(0), 1, d.size(-1)).to(d.device)
+        d_z = torch.cat([d, zeros], dim=1)
+        length_a = (d_z[:, 1:] - d_z[:, :-1]).norm(p=2, dim=2).sum(1)
+        length_b = last_node_coords.norm(p=2, dim=1)
+        length_c = (last_node_coords - d_z[:, 0]).norm(p=2, dim=1)
+
+        return length_a - length_b + length_c, mask
 
     @staticmethod
     def make_dataset(*args, **kwargs):

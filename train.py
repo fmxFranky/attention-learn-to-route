@@ -95,7 +95,7 @@ def train_epoch(model, optimizer, scaler, baseline, lr_scheduler, epoch,
 
     # Generate new training data for each epoch
     training_dataset = baseline.wrap_dataset(
-        problem.make_dataset(size=opts.graph_size,
+        problem.make_dataset(size=opts.max_graph_size,
                              num_samples=opts.epoch_size,
                              distribution=opts.data_distribution))
     training_sampler = torch.utils.data.distributed.DistributedSampler(
@@ -138,7 +138,8 @@ def train_epoch(model, optimizer, scaler, baseline, lr_scheduler, epoch,
                 # 'rng_state': torch.get_rng_state(),
                 # 'cuda_rng_state': torch.cuda.get_rng_state_all(),
                 # 'baseline': baseline.state_dict()
-            }, os.path.join(opts.save_dir, 'epoch-{}.pt'.format(epoch)))
+            },
+            os.path.join(opts.save_dir, 'epoch-{}.pt'.format(epoch)))
 
     start_time = time.time()
     avg_reward = validate(model, val_dataset, opts)
@@ -172,7 +173,12 @@ def train_batch(model, optimizer, scaler, baseline, epoch, batch_id, step,
     if scaler is not None:
         optimizer.zero_grad()
         with torch.cuda.amp.autocast():
-            cost, log_likelihood = model(x)
+            cost, log_likelihood = model(
+                x,
+                move_to(
+                    torch.randint(opts.min_graph_size,
+                                  opts.max_graph_size - 1,
+                                  size=[x.size(0), 1]), opts.device))
             bl_val, bl_loss = baseline.eval(
                 x, cost) if bl_val is None else (bl_val, 0)
             reinforce_loss = ((cost - bl_val) * log_likelihood).mean()
@@ -186,7 +192,8 @@ def train_batch(model, optimizer, scaler, baseline, epoch, batch_id, step,
 
     else:
         # Evaluate model, get costs and log probabilities
-        cost, log_likelihood = model(x)
+        cost, log_likelihood = model(
+            x)
 
         # Evaluate baseline, get baseline loss if any (only for critic)
         bl_val, bl_loss = baseline.eval(

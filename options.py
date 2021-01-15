@@ -18,7 +18,11 @@ def get_options(args=None):
     parser.add_argument('--problem',
                         default='tsp',
                         help="The problem to solve, default 'tsp'")
-    parser.add_argument('--graph_size',
+    parser.add_argument('--min_graph_size',
+                        type=int,
+                        default=100,
+                        help="The size of the problem graph")
+    parser.add_argument('--max_graph_size',
                         type=int,
                         default=100,
                         help="The size of the problem graph")
@@ -211,7 +215,7 @@ def get_options(args=None):
     opts.run_name = "{}_{}".format(opts.run_name,
                                    time.strftime("%Y%m%dT%H%M%S"))
     opts.save_dir = os.path.join(opts.output_dir,
-                                 "{}_{}".format(opts.problem, opts.graph_size),
+                                 "{}_{}-{}".format(opts.problem, opts.min_graph_size, opts.max_graph_size),
                                  opts.run_name)
     if opts.bl_warmup_epochs is None:
         opts.bl_warmup_epochs = 1 if opts.baseline == 'rollout' else 0

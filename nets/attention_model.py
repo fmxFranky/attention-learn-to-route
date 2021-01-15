@@ -157,7 +157,7 @@ class AttentionModel(nn.Module):
         if temp is not None:  # Do not change temperature if not provided
             self.temp = temp
 
-    def forward(self, input, return_pi=False):
+    def forward(self, input, sep=None, return_pi=False):
         """
         :param input: (batch_size, graph_size, node_dim) input node features or dictionary with multiple tensors
         :param return_pi: whether to return the output sequences, this is optional as it is not compatible with
@@ -170,24 +170,16 @@ class AttentionModel(nn.Module):
         if self.checkpoint_encoder and self.training:  # Only checkpoint if we need gradients
             embeddings, _ = checkpoint(self.embedder, self._init_embed(input))
         elif self.attention_type == 'original':
-            if self.encoding_knn_size is not None:
-                mask_shape = (input.size(0), input.size(1), input.size(1))
-                attn_mask = torch.zeros(*mask_shape,
-                                        device=input.device).bool()
-                knn = torch.argsort(
-                    (input[:, :, None, :] - input[:, None, :, :]).norm(
-                        p=2, dim=-1))[..., :self.encoding_knn_size]
-                attn_mask.scatter_(-1, knn, True)
-            else:
-                attn_mask = None
-            embeddings, _ = self.embedder(self._init_embed(input),
-                                          mask=attn_mask)
+            embeddings, _ = self.embedder(self._init_embed(input))
         else:
             embeddings = self.embedder(self._init_embed(input))
 
-        _log_p, pi = self._inner(input, embeddings)
+        if sep is None:
+            sep = torch.ones(input.size(0), 1,
+                             device=input.device) * input.size(1)
+        _log_p, pi = self._inner(input, sep, embeddings)
 
-        cost, mask = self.problem.get_costs(input, pi)
+        cost, mask = self.problem.get_costs(input, pi, sep)
         # Log likelyhood is calculated within the model since returning it per action does not work well with
         # DataParallel since sequences can be of different lengths
         ll = self._calc_log_likelihood(_log_p, pi, mask)
@@ -278,12 +270,12 @@ class AttentionModel(nn.Module):
         # TSP
         return self.init_embed(input)
 
-    def _inner(self, input, embeddings):
+    def _inner(self, input, sep, embeddings):
 
         outputs = []
         sequences = []
 
-        state = self.problem.make_state(input)
+        state = self.problem.make_state(input, sep)
 
         # Compute keys, values for the glimpse and keys for the logits once as they can be reused in every step
         fixed = self._precompute(embeddings)
@@ -523,18 +515,19 @@ class AttentionModel(nn.Module):
             -2, -1)) / math.sqrt(glimpse_Q.size(-1))
         if self.mask_inner:
             assert self.mask_logits, "Cannot mask inner without masking logits"
-            if self.decoding_knn_size is not None:
-                attn_mask = torch.ones_like(mask).bool().scatter(
-                    -1,
-                    state.get_nn_current().long()[
-                        ..., :self.decoding_knn_size or key_size], False)
-            else:
-                attn_mask = torch.zeros_like(mask).bool()
-
-            compatibility[(
-                mask +
-                attn_mask)[None, :, :,
-                           None, :].expand_as(compatibility)] = -math.inf
+            # Need to get the real number of nodes in each sample of the batch
+            indicators1 = state.sep.repeat(1, state.n) - torch.arange(
+                0, state.n)[None, :].repeat(batch_size, 1).to(query.device)
+            indicators1[indicators1 == 0] = -1.
+            indicators2 = torch.maximum(
+                torch.minimum(state.sep - torch.ones_like(state.sep) * state.i,
+                              torch.tensor(1.).to(query.device)),
+                torch.tensor(-1.).to(query.device))
+            indicators2[indicators2 == 0] = -1.
+            attn_mask = (indicators1 * indicators2 < 0)[:, None, :]
+            real_mask = mask + attn_mask
+            compatibility[real_mask[None, :, :, None, :].expand_as(
+                compatibility)] = -math.inf
 
         # Batch matrix multiplication to compute heads (n_heads, batch_size, num_steps, val_size)
         heads = torch.matmul(torch.softmax(compatibility, dim=-1), glimpse_V)
@@ -557,7 +550,7 @@ class AttentionModel(nn.Module):
         if self.tanh_clipping > 0:
             logits = torch.tanh(logits) * self.tanh_clipping
         if self.mask_logits:
-            logits[mask] = -math.inf
+            logits[real_mask] = -math.inf
 
         return logits, glimpse.squeeze(-2)
 

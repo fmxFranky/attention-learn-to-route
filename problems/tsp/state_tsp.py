@@ -22,6 +22,7 @@ class StateTSP(NamedTuple):
     cur_coord: torch.Tensor
     i: torch.Tensor  # Keeps track of step
     knn: torch.Tensor
+    sep: torch.Tensor
 
     @property
     def visited(self):
@@ -44,8 +45,12 @@ class StateTSP(NamedTuple):
             )
         return super(StateTSP, self).__getitem__(key)
 
+    @property
+    def n(self):
+        return self.loc.size(-2)
+
     @staticmethod
-    def initialize(loc, visited_dtype=torch.uint8):
+    def initialize(loc, sep, visited_dtype=torch.uint8):
 
         batch_size, n_loc, _ = loc.size()
         prev_a = torch.zeros(batch_size,
@@ -77,7 +82,8 @@ class StateTSP(NamedTuple):
             cur_coord=None,
             i=torch.zeros(1, dtype=torch.int64,
                           device=loc.device),  # Vector with length num_steps,
-            knn=None)
+            knn=None,
+            sep=sep)
 
     def get_final_cost(self):
 

@@ -4,6 +4,7 @@ logs/
 results/
 pt/
 submit.yaml
+fast-transformers/
 .ptconfig
 .ptignore
 __pycache__/
@@ -15,3 +16,4 @@ __pycache__/
 *.log
 *.bak
 *.yaml
+*.ipynb
